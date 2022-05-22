@@ -1,0 +1,28 @@
+[14:30:17] [ServerMain/INFO]: Environment: authHost='https://authserver.mojang.com', accountsHost='https://api.mojang.com', sessionHost='https://sessionserver.mojang.com', servicesHost='https://api.minecraftservices.com', name='PROD'
+[14:30:17] [ServerMain/INFO]: Found new data pack file/bukkit, loading it automatically
+[14:30:19] [Worker-Main-1/INFO]: Loaded 7 recipes
+[14:30:20] [Server thread/INFO]: Starting minecraft server version 1.18.2
+[14:30:20] [Server thread/INFO]: Loading properties
+[14:30:20] [Server thread/INFO]: This server is running Paper version git-Paper-341 (MC: 1.18.2) (Implementing API version 1.18.2-R0.1-SNAPSHOT) (Git: fc1752f)
+[14:30:20] [Server thread/INFO]: Using 4 threads for Netty based IO
+[14:30:20] [Server thread/INFO]: Server Ping Player Sample Count: 12
+[14:30:20] [Server thread/INFO]: Default game type: SURVIVAL
+[14:30:20] [Server thread/INFO]: Generating keypair
+[14:30:21] [Server thread/INFO]: Starting Minecraft server on *:25565
+[14:30:21] [Server thread/INFO]: Using default channel type
+[14:30:21] [Server thread/INFO]: Paper: Using Java 11 compression from Velocity.
+[14:30:21] [Server thread/INFO]: Paper: Using Java cipher from Velocity.
+[14:30:21] [Server thread/INFO]: Preparing level "world"
+[14:30:34] [Server thread/INFO]: Preparing start region for dimension minecraft:overworld
+[14:30:35] [Server thread/INFO]: Time elapsed: 541 ms
+[14:30:35] [Server thread/INFO]: Preparing start region for dimension minecraft:the_end
+[14:30:35] [Server thread/INFO]: Time elapsed: 568 ms
+[14:30:35] [Server thread/INFO]: Preparing start region for dimension minecraft:the_nether
+[14:30:36] [Server thread/INFO]: Time elapsed: 189 ms
+[14:30:36] [Server thread/INFO]: Running delayed init tasks
+[14:30:36] [Server thread/INFO]: Done (15.298s)! For help, type "help"
+[14:30:36] [Server thread/INFO]: Timings Reset
+[14:30:41] [Server thread/INFO]: Stopping the server
+[14:30:41] [Server thread/INFO]: Stopping server
+[14:30:41] [Server thread/INFO]: Saving players
+[14:30:41] [Server thread/INFO]: Saving worlds
