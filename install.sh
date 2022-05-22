@@ -1,0 +1,1077 @@
+#!/bin/bash
+pcver="1.1"
+
+if [[ $EUID -ne 0 ]]; then
+  echo "ERROR: This script must be run as root" 2>&1
+  exit 1
+fi
+
+SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+
+# Get the LAN IP address
+
+  # test the route based on $host and treat that as the interface
+  interface=""
+  host=github.com
+  host_ip=$(getent ahosts "$host" | awk '{print $1; exit}')
+  interface=`ip route get "$host_ip" | grep -Po '(?<=(dev )).*(?= src| proto)' | cut -f 1 -d " "`
+  ip=$(/sbin/ip -f inet addr show $interface | grep -Po 'inet \K[\d.]+' | head -n 1)
+  if [[ $ip == "" ]]; then
+    # Never reply with a blank string - instead, use localhost if no IP is found
+    # This would be the case if no network connection is non-existent
+    ip="127.0.0.1"
+  fi
+
+
+# Determine where the config.txt file is
+  # Generic
+  configfile=/boot/config.txt
+  # Ubuntu
+  if [[ -e /boot/firmware/config.txt ]]; then
+    configfile=/boot/firmware/config.txt
+  fi
+  # Version comparison which allows comparing 1.16.5 to 1.14.0 (for example)
+function version { echo "$@" | awk -F. '{ printf("%d%03d%03d%03d\n", $1,$2,$3,$4); }'; }
+
+# Install the web interface
+#psi=1
+
+# Prevent running multiple apt updates
+updated=0
+
+# Place the current folder in a variable to use as a base source folder
+base=$(pwd)
+
+dialog=$(which dialog)
+if [[ $dialog == "" ]]; then
+  printf "Installing dialog... "
+  if [[ $updated == 0 ]]; then
+    apt-get update > /dev/null 2>&1
+    updated=1
+  fi
+  apt-get -y install dialog > /dev/null 2>&1
+  dialog=$(which dialog)
+  if [[ $dialog == "" ]]; then
+    echo "Failed. Aborting. Install dialog first."
+    exit 0
+  else
+    echo "Success."
+  fi
+fi
+
+dialog --title "Minecraft Server Installer Paper 1.18.2 $pcver" \
+--msgbox "
+
+       Play on Dreamcraft Network's
+             Minecraft server
+
+" 12 48
+
+dialog --title "Minecraft Installer For Paper $pcver" \
+--msgbox "
+        The Minecraft Server Installer
+          For Ubuntu  Version 20.0.4 
+
+            By Dreamcraft Network
+
+         Installer Version: $pcver
+
+" 16 48
+dialog --infobox "Checking dependencies..." 3 34 ; sleep 2
+
+javaminver=8; # The minimum version of Java for Minecraft Server to run
+javamaxver=18; # The current max version available in known repositories that Minecraft Server can run on.
+
+if [[ $updated == 0 ]]; then
+  dialog --infobox "Updating repositories..." 3 34 ;
+  apt-get update > /dev/null 2>&1
+  updated=1
+fi
+
+if type -p java > /dev/null; then
+  _java=java
+elif [[ -n "$JAVA_HOME" ]] && [[ -x "$JAVA_HOME/bin/java" ]];  then
+    _java="$JAVA_HOME/bin/java"
+fi
+
+# minimum version of Java supported by Minecraft Server
+if [[ $ver > 8 ]] || [[ $ver == 1 ]] && [[ $subver > 8 ]]; then
+  dialog --title "Error" \
+      --msgbox "\n`which java` is version ${javaver}. You'll need a newer version of JRE." 8 50
+  echo
+  echo
+  echo "Failed."
+  echo
+  exit 0
+fi
+
+if [ $(dpkg-query -W -f='${Status}' git 2>/dev/null | grep -c "ok installed") -eq 0 ]; then
+  dialog --infobox "Installing git..." 3 34 ;
+  if [[ $updated == 0 ]]; then
+    apt-get update > /dev/null 2>&1
+    updated=1
+  fi
+  apt-get -y install git > /dev/null 2>&1
+fi
+git config --global --unset core.autocrlf
+
+if [ $(dpkg-query -W -f='${Status}' screen 2>/dev/null | grep -c "ok installed") -eq 0 ]; then
+  dialog --infobox "Installing screen..." 3 34 ;
+  if [[ $updated == 0 ]]; then
+    apt-get update > /dev/null 2>&1
+    updated=1
+  fi
+  apt-get -y install screen > /dev/null 2>&1
+fi
+
+if [ $(dpkg-query -W -f='${Status}' java18 2>/dev/null | grep -c "ok installed") -eq 0 ]; then
+  dialog --infobox "Installing Java18..." 3 34 ;
+  if [[ $updated == 0 ]]; then
+    apt-get update > /dev/null 2>&1
+    updated=1
+  fi
+  apt-get -y install openjdk-18-jre > /dev/null 2>&1
+fi
+
+if [ $(dpkg-query -W -f='${Status}' wget 2>/dev/null | grep -c "ok installed") -eq 0 ]; then
+  dialog --infobox "Installing wget..." 3 34 ;
+  if [[ $updated == 0 ]]; then
+    apt-get update > /dev/null 2>&1
+    updated=1
+  fi
+  apt-get -y install wget > /dev/null 2>&1
+fi
+
+if [ $(dpkg-query -W -f='${Status}' cron 2>/dev/null | grep -c "ok installed") -eq 0 ]; then
+  dialog --infobox "Installing cron..." 3 34 ;
+  if [[ $updated == 0 ]]; then
+    apt-get update > /dev/null 2>&1
+    updated=1
+  fi
+  apt-get -y install cron > /dev/null 2>&1
+fi
+mcver="1.16.5"
+if (( $ver >= 17 )); then # Java version 17+ allows 1.18.x
+  mcver="1.18.2"
+elif (( $ver >= 16 )); then # Java version 16+ allows 1.17.x
+  mcver="1.17.1"
+fi
+user=$1
+
+if [[ $user == "" ]]; then
+  validuser=""
+else
+  validuser=$(getent passwd $user)
+fi
+while [[ $validuser == "" ]]
+do
+
+  users=$(cat /etc/passwd | grep '/home' | cut -d: -f1)
+  count=1
+  declare -a usersarr=()
+  for username in $users; do
+    if [[ -d /home/${username}/ ]]; then
+      usersarr+=("${username}" "/home/${username}/Minecraft/")
+    fi
+  done
+  exec 3>&1
+  user=$(dialog --title "Linux User" --menu "Linux User to run Minecraft Server:" 20 50 10 "${usersarr[@]}" 2>&1 1>&3);
+
+  case $? in
+  0)
+   if [[ $user == "" ]]; then
+    validuser=""
+   else
+    validuser=$(getent passwd $user)
+   fi
+   if [[ $validuser == "" ]]; then
+     dialog --title "Error" \
+       --msgbox "\n $user does not exist." 6 50
+   fi
+   ;;
+  1)
+   echo
+   echo
+   echo "Aborted."
+   echo
+   exit 1 ;;
+  esac
+
+done
+instdir="/home/$user/Minecraft/"
+
+ exec 3>&1
+      result=$(dialog --title Minecraft Server Installer $pcver" \
+         --menu Minecraft Server is already installed:" 9 40 4 \
+         "U"       "Upgrade Software (Keep World)" \
+         "R"       "Remove Previous and Reinstall" \
+        2>&1 1>&3);
+
+      if [[ $? == 0 ]]; then
+        case $result in
+          U)
+            upgrade=1
+            ;;
+          R)
+            dialog --title "Confirmation"  --yesno "\nThis will remove your entire previous installation, including your world files.\n\nContinue?" 12 50
+            case $? in
+              1)
+              echo
+              echo
+              echo "Aborted."
+              echo
+              exit 1 ;;
+            esac
+            replace=1
+            ;;
+          esac
+        else
+          echo
+          echo
+          echo "Aborted."
+          echo
+          exit 1
+        fi
+
+    fi
+  fi
+else
+  echo "Aborting: $user does not have a homedir."
+  exit 1
+fi
+
+ if [[ $upgrade == 0 ]]; then
+  exec 3>&1
+  result=$(dialog --title Minecraft Server Installer $pcver" \
+         --menu "Choose your game seed:" 20 50 10 \
+         "A"       "Random (Default, ${mcver})" \
+         "B"       "Custom (${mcver})" \
+       2>&1 1>&3);
+
+  if [[ $? == 0 ]]; then
+    case $result in
+    A)
+      seed=""
+      mcverANY=1
+      ;;
+    B)
+      seed="custom"
+      mcverANY=1
+      ;;
+    esac
+  else
+    echo
+    echo
+    echo "Aborted."
+    echo
+    exit 1
+  fi
+
+  # Input custom seed
+  if [[ $seed == "custom" ]]; then
+    seed=$(dialog --stdout --title "Custom World Seed" \
+      --inputbox "Enter your custom world seed" 8 50)
+  fi
+
+declare -a flavors=()
+
+if [[ $mcverANY == "1" ]] || [[ $mcver == "1.17.1" ]] || [[ $mcver == "1.17" ]] || [[ $mcver == "1.16.5" ]] || [[ $mcver == "1.18" ]] || [[ $mcver == "1.18.1" ]] || [[ $mcver == "1.18.2" ]]; then
+  flavors+=("P" "Paper (Default, ${mcver})")
+fi
+
+if [[ $mcverANY == "1" ]] || [[ $mcver == "1.16.5" ]] || [[ $mcver == "1.17.1" ]] || [[ $mcver == "1.18" ]] || [[ $mcver == "1.18.1" ]] || [[ $mcver == "1.18.2" ]]; then
+  flavors+=("R" "Forge (${mcver})")
+fi
+
+if [[ $mcverANY == "1" ]] || [[ $mcver == "1.17.1" ]] || [[ $mcver == "1.17" ]] || [[ $mcver == "1.16.5" ]] || [[ $mcver == "1.18" ]] || [[ $mcver == "1.18.1" ]] || [[ $mcver == "1.18.2" ]]; then
+  flavors+=("S" "Spigot (${mcver})")
+fi
+
+if [[ $mcverANY == "1" ]] || [[ $mcver == "1.17.1" ]] || [[ $mcver == "1.17" ]] || [[ $mcver == "1.16.5" ]] || [[ $mcver == "1.18" ]] || [[ $mcver == "1.18.1" ]] || [[ $mcver == "1.18.2" ]]; then
+  flavors+=("V" "Vanilla (${mcver})")
+fi
+
+exec 3>&1
+result=$(dialog --title "Minecraft Server Installer $pcver" --menu "Choose your Minecraft server type:" 20 40 10 "${flavors[@]}" 2>&1 1>&3);
+
+if [[ $? == 0 ]]; then
+  case $result in
+R)
+      # https://files.minecraftforge.net/net/minecraftforge/forge/
+      flavor="Forge"
+      if [[ $mcver == "1.18.2" ]]; then
+        url="https://maven.minecraftforge.net/net/minecraftforge/forge/1.18.2-40.1.0/forge-1.18.2-40.1.0-installer.jar"
+      elif [[ $mcver == "1.18.1" ]]; then
+        url="https://maven.minecraftforge.net/net/minecraftforge/forge/1.18.1-39.0.85/forge-1.18.1-39.0.85-installer.jar"
+      elif [[ $mcver == "1.18" ]]; then
+        url="https://maven.minecraftforge.net/net/minecraftforge/forge/1.18-38.0.17/forge-1.18-38.0.17-installer.jar"
+      elif [[ $mcver == "1.17.1" ]]; then
+        url="https://maven.minecraftforge.net/net/minecraftforge/forge/1.17.1-37.0.107/forge-1.17.1-37.0.107-installer.jar"
+      else
+        url="https://maven.minecraftforge.net/net/minecraftforge/forge/1.16.5-36.1.0/forge-1.16.5-36.1.0-installer.jar"
+      fi
+      jarname="forge-installer.jar"
+      switches="--installServer ."
+      ;;
+    V) flavor="Vanilla"
+        if [[ $mcver == "1.18.2" ]]; then
+        vanilla="https://www.dropbox.com/sh/xee6p0yhync2u52/AACS7p936f8W7N7W0JB3-vhSa?dl=1"
+        elif [[ $mcver == "1.18.1" ]]; then
+        vanilla="https://www.dropbox.com/sh/18w4t1ful3r8elb/AADTjmxsIqbieX0tI6ZKyQRXa?dl=1"
+        elif [[ $mcver == "1.18" ]]; then
+        vanilla="https://www.dropbox.com/sh/elyqrolmamlcsnq/AAAm_m0hCZ_7RvqD6kx8PVv5a?dl=1"
+        elif [[ $mcver == "1.17.1" ]]; then
+        vanilla="https://www.dropbox.com/sh/lhz4zd4wa57bwx3/AAAoKoGV5X6V4M5dEfVrpS5ja?dl=1"
+        elif [[ $mcver == "1.17" ]]; then
+        # 1.17
+        vanilla="https://www.dropbox.com/sh/i7hqfj2i1rsh18j/AAAhPvi9-4UEU_0rEJ9QtxLoa?dl=1"
+        else
+        # 1.16.5
+        vanilla="https://www.dropbox.com/sh/32f8tum86540xcw/AAAALjrZVfg5wL1p8DHKoEc5a?dl=1"
+        jarname="server.jar"
+        switches=""
+        ;;
+    S)
+      flavor="Spigot"
+      if [[ $mcver == "1.18.2" ]]; then
+        url="https://www.dropbox.com/s/0j8mnmn9br214wo/spigot-1.18.2.jar?dl=1"
+      elif [[ $mcver == "1.18.1" ]]; then
+        url="https://www.dropbox.com/s/kwwxx2s7tksor1x/spigot-1.18.1.jar?dl=1"
+      elif [[ $mcver == "1.18" ]]; then
+        url="https://www.dropbox.com/s/6vvzfo3y4tg90qw/spigot-1.18.jar?dl=1"
+      elif [[ $mcver == "1.17.1" ]]; then
+        url="https://www.dropbox.com/s/s0mmscjt7aqsj03/spigot-1.17.1.jar?dl=1"
+      elif [[ $mcver == "1.17" ]]; then
+        url="https://www.dropbox.com/s/m9h7shzm9b0kkzt/spigot-1.17.jar?dl=1"
+      else
+        url="https://www.dropbox.com/s/canrapwcm6g06kt/spigot-1.16.5.jar?dl=1"
+      fi
+      jarname="spigot-*.jar"
+      switches="--rev ${mcver}"
+      ;;
+ P)
+      # https://papermc.io/downloads
+      flavor="Paper"
+      if [[ $mcver == "1.18.2" ]]; then
+        url="https://www.dropbox.com/s/yhmebkht0y7jh3b/paper-1.18.2-268.jar?dl=1"
+      elif [[ $mcver == "1.18.1" ]]; then
+        url="https://www.dropbox.com/s/aqv5ysitpttgc8s/paper-1.18.1-216.jar?dl=1"
+      elif [[ $mcver == "1.18" ]]; then
+        url="https://www.dropbox.com/s/ae3yojgrscfv60e/paper-1.18-66.jar?dl=1"
+      elif [[ $mcver == "1.17.1" ]]; then
+        url="https://www.dropbox.com/s/8bcr3rnw94fa5xs/paper-1.17.1-408.jar?dl=1"
+      elif [[ $mcver == "1.17" ]]; then
+        url="https://www.dropbox.com/s/95uw140ng1wt1q4/paper-1.17-66.jar?dl=1"
+      else
+        url="https://www.dropbox.com/s/zyjppey77dihnue/paper-1.16.5-790.jar?dl=1"
+      fi
+      jarname="minecraft.jar"
+      switches=""
+      ;;
+  esac
+   
+else
+  echo
+  echo
+  echo "Aborted."
+  echo
+  exit 1
+fi
+if [[ $flavor == "" ]]; then
+  echo
+  echo
+  echo "Aborted."
+  echo
+  exit 1
+fi
+exec 3>&1
+result=$(dialog --title "Minecraft Server Installer $pcver $mcver" \
+         --menu "Choose your game type:" 20 40 10 \
+         "S"       "Survival" \
+         "C"       "Creative" \
+         "H"       "Hardcore" \
+       2>&1 1>&3);
+
+if [[ $? == 0 ]]; then
+  case $result in
+    S)
+      gamemode="survival"
+      ;;
+    C)
+      gamemode="creative"
+      ;;
+    H)
+      hardcore="true",
+      difficulty="hard"
+      ;;
+    esac
+else
+  echo
+  echo
+  echo "Aborted."
+  echo
+  exit 1
+fi
+
+dialog --title "End-User License Agreement"  --yesno "In order to proceed, you must read and accept the EULA at https://account.mojang.com/documents/minecraft_eula\n\nDo you accept the EULA?" 8 60
+
+  case $? in
+  0)
+   eula="accepted"
+   eula_stamp=$(date)
+   ;;
+  1)
+   echo
+   echo
+   echo "EULA not accepted. You are not permitted to install this software."
+   echo
+   exit 1 ;;
+  esac
+# Gather some info about your system which will be used to determine the config
+revision=$(cat /proc/cpuinfo | grep 'Revision' | awk '{print $3}')
+board="Unknown" # Default will be overridden if determined
+memtotal=$(cat /proc/meminfo | grep MemTotal | awk '{print $2}') # Amount of memory in KB
+memavail=$(cat /proc/meminfo | grep MemAvailable | awk '{print $2}') # Amount of memory in KB
+memvariance=$(($memtotal - $memavail)) # Figure out how much memory is being used so we can make dynamic decisions for this board
+mem=$(( (($memtotal - $memvariance) / 1024) - 518)) # Amount of memory in MB
+memreservation=$((($memavail * 20/100) / 1024)) # Reserve memory for system (Failure to do this will cause "Error occurred during initialization of VM")
+gamemem=$(($mem - $memreservation)) # Calculate how much memory we can give to the game server (in MB)
+gamememMIN=$((($mem * 80/100) - 1024)) # Figure a MINIMUM amount of memory to allocate
+# Seriously, if you have 100 GB RAM, we don't need more than 12 of it
+if (( $gamemem > 12000 )); then
+    gamemem=12288
+    gamememMIN=1500
+fi
+oc_volt=0
+oc_friendly="N/A"
+if (( $gamememMIN < 0 )); then
+  dialog --title "Error" \
+    --msgbox "
+YOU DON'T HAVE ENOUGH AVAILABLE RAM
+
+Your system shows only $((${memavail} / 1024))MB RAM available, but with the applications running you have only $mem MB RAM available for allocation, which doesn't leave enough for overhead. Typically I'd want to be able to allocate at least 2 GB RAM.
+
+Either you have other things running, or your board is simply not good enough to run a Minecraft server." 18 50
+   echo
+   echo
+   echo "Failed. Not enough memory available for Minecraft server."
+   echo
+   exit 0
+fi
+
+if
+   [[ "$revision" == *"a03111" ]] ||
+   [[ "$revision" == *"b03111" ]] ||
+   [[ "$revision" == *"b03112" ]] ||
+   [[ "$revision" == *"b03114" ]] ||
+   [[ "$revision" == *"c03111" ]] ||
+   [[ "$revision" == *"c03112" ]] ||
+   [[ "$revision" == *"c03114" ]] ||
+   [[ "$revision" == *"d03114" ]]; then
+     board='Raspberry Pi 4'
+     boardnum=1
+     oc_volt=4
+     oc_freq=1900
+     oc_friendly="1.9 GHz"
+elif [[ "$revision" == *"c03130" ]]; then
+  board='Raspberry Pi 400'
+  boardnum=2
+  oc_volt=6
+  oc_freq=2000
+  oc_friendly="2.0 GHz"
+fi
+
+if (( $gamemem > 3800 )); then
+  kernel=$(uname -a)
+  if [[ ! "$kernel" == *"amd64"* ]] && [[ ! "$kernel" == *"arm64"* ]] && [[ ! "$kernel" == *"aarch64"* ]] && [[ ! "$kernel" == *"x86_64"* ]]; then
+
+    dialog --title "Warning" \
+    --msgbox "
+WARNING: 32-Bit OS on 64-Bit Board!
+
+Upgrade your distro to 64-bit to use your RAM.
+
+Since you are only using a 32-bit OS, you cannot use more than 4 GB RAM for Minecraft. Abort and Upgrade." 13 50
+
+    gamemem=2500
+    gamememMIN=1500
+
+  fi
+else if (( $gamememMIN < 1024 )); then
+  dialog --title "Warning" --yesno "\nWARNING: Either you have other things running, or your board is simply not good enough to run a Minecraft server. It is recommended you abort. ONLY install this on a dedicated system with no desktop environment or other applications running.\n\nWould you like to ABORT?" 14 50
+  case $? in
+  0)
+   echo
+   echo
+   echo "Aborted."
+   echo
+   exit 1 ;;
+  esac
+fi
+fi
+dialog --title "Minecraft Server Installer $pcver"  --yesno "Automatically load the server on boot?" 6 60
+  case $? in
+  0)
+   cron=1
+   ;;
+  1)
+   cron=0
+   ;;
+  esac
+  dialog --title "Information" \
+--msgbox "
+Detected Hardware:
+$board
+
+RAM to Allocate:
+${gamememMIN##*( )}MB - ${gamemem##*( )}MB
+
+Overclock To:
+$oc_friendly
+
+Server User:
+$user
+
+Server Version:
+$flavor $mcver ($gamemode)" 20 50
+
+if [[ ! $oc_volt == 0 ]]; then
+  dialog --title "Confirmation"  --yesno "\nI will be modifying ${configfile} to overclock this ${board}. I am not responsible for damage to your system, and you do this at your own risk.\n\nContinue?" 12 50
+  case $? in
+  1)
+   echo
+   echo
+   echo "Aborted."
+   echo
+   exit 1 ;;
+  esac
+fi
+
+
+###############################################
+# Finished Asking Questions: Begin Installation
+###############################################
+
+if [[ $upgrade == 1 ]] || [[ $replace == 1 ]]; then
+  if [[ -e ${instdir}stop ]]; then
+    dialog --infobox "Stopping server..." 3 22 ;
+    su - $user -c "${instdir}stop" > /dev/null 2>&1
+  fi
+fi
+if [[ $replace == 1 ]]; then
+  dialog --infobox "Creating Backup in home folder..." 3 40 ;
+  tar -czvf ${instdir}..Minecraft Server_backup-$(date -d "today" +"%Y-%m-%d-%H-%M").tar.gz $instdir > /dev/null 2>&1
+  cd ${instdir}..
+  dialog --infobox "Removing Old Install..." 3 27 ;
+  rm -rf ${instdir}
+  sleep 2
+fi
+
+if [[ $upgrade == 0 ]]; then
+  mkdir $instdir
+fi
+cd $instdir
+
+if [[ $upgrade == 1 ]]; then
+  rm -rf src
+fi
+mkdir src && cd src
+
+# Install the tools needed to compile C code
+if [[ $compiler == 1 ]]; then
+
+  if [ $(dpkg-query -W -f='${Status}' gcc 2>/dev/null | grep -c "ok installed") -eq 0 ]; then
+    dialog --infobox "Installing gcc..." 3 34 ;
+    if [[ $updated == 0 ]]; then
+      apt-get update > /dev/null 2>&1
+      updated=1
+    fi
+    apt-get -y install gcc > /dev/null 2>&1
+  fi
+
+  if [ $(dpkg-query -W -f='${Status}' g++ 2>/dev/null | grep -c "ok installed") -eq 0 ]; then
+    dialog --infobox "Installing g++..." 3 34 ;
+    if [[ $updated == 0 ]]; then
+      apt-get update > /dev/null 2>&1
+      updated=1
+    fi
+    apt-get -y install g++ > /dev/null 2>&1
+  fi
+
+  if [ $(dpkg-query -W -f='${Status}' cmake 2>/dev/null | grep -c "ok installed") -eq 0 ]; then
+    dialog --infobox "Installing cmake..." 3 34 ;
+    if [[ $updated == 0 ]]; then
+      apt-get update > /dev/null 2>&1
+      updated=1
+    fi
+    apt-get -y install cmake > /dev/null 2>&1
+  fi
+
+fi
+
+
+# The server version requires the supplemental download of the vanilla server
+if [[ "$dlvanilla" = "1" ]]; then
+  dialog --infobox "Downloading Vanilla..." 3 34 ;
+  wget $vanilla -O ${instdir}server.jar > /dev/null 2>&1
+fi
+
+dialog --infobox "Downloading ${flavor}..." 3 34 ; sleep 1
+
+if [[ $jarname != "" ]]; then
+
+  wget $url -O minecraft.jar > /dev/null 2>&1
+
+elif [[ $script != "" ]]; then
+
+  wget $script -O minecraft.sh > /dev/null 2>&1
+
+else
+
+  # This should never happen. No URL or Script for selection
+  echo
+  echo
+  echo "Died."
+  echo
+  exit 0
+
+fi
+
+dialog --infobox "Installing ${flavor}..." 3 34 ;
+if [[ $url == $vanilla ]]; then
+  # Vanilla doesn't need to be compiled, just copy the file
+  cp minecraft.jar server.jar
+  else
+  java -Xmx500M -jar minecraft.jar $switches > /dev/null 2&>1
+fi
+else
+
+  # The installer also created or obtained the Minecraft server.jar file. Include it.
+  if [[ -e ${instdir}src/server.jar ]]; then
+    cp -f ${instdir}src/server.jar $instdir
+  fi
+
+  # Fabric and Forge use a libraries folder, so we'll keep that.
+  if [[ -d ${instdir}src/libraries ]]; then
+    # Move existing Libraries folder before replacing
+    if [[ -e ${instdir}libraries ]]; then
+      mv ${instdir}libraries ${instdir}libraries~backup_$(date +%Y-%m-%d_%H-%M-%S)
+    fi
+    mv ${instdir}src/libraries ${instdir}
+    if [[ ! -e ${instdir}server.properties ]]; then
+      cp ${SCRIPT_DIR}/assets/server.properties ${instdir}
+    fi
+  fi
+
+  if [[ $flavor == "Forge" ]]; then
+    # The forge installer removes itself and creates instead a minecraft.jar file
+    # Use this instead to measure whether compile was successful
+    jarname="minecraft.jar"
+  fi
+
+  jarfile=$(ls ${instdir}src/${jarname})
+  if [[ $jarfile == "" ]]; then
+    dialog --title "Error" \
+      --msgbox "\nSadly, it appears compiling failed." 8 50
+    echo
+    echo
+    echo "Failed."
+    echo
+    exit 0
+  else
+    cp $jarfile $instdir
+    t=${jarfile#*-}
+    version=$(basename $t .jar)
+  fi
+
+fi
+
+
+if [[ $psi == 1 ]]; then
+
+  # PHP interpreter / server forMinecraft Server configuration interface
+  if [ $(dpkg-query -W -f='${Status}' php 2>/dev/null | grep -c "ok installed") -eq 0 ]; then
+    dialog --infobox "Installing PHP..." 3 34 ;
+    if [[ $updated == 0 ]]; then
+      apt-get update > /dev/null 2>&1
+      updated=1
+    fi
+    apt-get -y install php-cli > /dev/null 2>&1
+  fi
+
+  if [[ ! -d /etcMinecraft Server/psi/ ]]; then
+    mkdir -p /etcMinecraft Server/psi
+  fi
+
+  cp ${base}/assets/psi/* /etcMinecraft Server/psi/
+
+  printf '{"pcver":"%s","instdir":"%s","flavor":"%s"}\n' "$pcver" "$instdir" "$flavor" > /etcMinecraft Server/psi/psi.json
+
+  chown -R $user:$user /etcMinecraft Server/
+fi
+
+
+###############################################
+# Patch Minecraft against exploit within Log4j
+# See https://www.minecraft.net/en-us/article/important-message--security-vulnerability-java-edition?ref=launcher
+###############################################
+
+# This exploit was patched in 1.18.1, so we only have to deal with older releases.
+
+# 1.17-1.18
+if [ $(version $mcver) -ge $(version "1.17") ] && [ $(version $mcver) -le $(version "1.18") ]; then
+  cli_args="-Dlog4j2.formatMsgNoLookups=true"
+fi
+# 1.12-1.16.5
+if [ $(version $mcver) -ge $(version "1.12") ] && [ $(version $mcver) -le $(version "1.16.5") ]; then
+  wget https://launcher.mojang.com/v1/objects/02937d122c86ce73319ef9975b58896fc1b491d1/log4j2_112-116.xml -O ${instdir}log4j2_112-116.xml > /dev/null 2>&1
+  cli_args="-Dlog4j.configurationFile=log4j2_112-116.xml"
+fi
+# 1.7-1.11.2
+if [ $(version $mcver) -ge $(version "1.7") ] && [ $(version $mcver) -le $(version "1.11.2") ]; then
+  wget https://launcher.mojang.com/v1/objects/dd2b723346a8dcd48e7f4d245f6bf09e98db9696/log4j2_17-111.xml -O ${instdir}log4j2_112-116.xml > /dev/null 2>&1
+  cli_args="-Dlog4j.configurationFile=log4j2_17-111.xml"
+fi
+
+###############################################
+# /Patch against exploit within Log4j
+###############################################
+
+
+###############################################
+# Create the scripts
+###############################################
+
+dialog --infobox "Creating scripts..." 3 34 ; sleep 1
+
+# Create the run script
+echo '#!/bin/bash
+user=$(whoami); if [[ $user != "'${user}'" ]]; then echo "Cannot run as ${user} - expecting '${user}'"; exit; fi
+cd "$(dirname "$0")"' > ${instdir}server
+if [[ $flavor == "Cuberite" ]]; then
+  echo ${instdir}cuberite/Cuberite >> ${instdir}server
+else
+  # Forge requires its own unix_args be included
+  if [[ $flavor == "Forge" ]]; then
+    # Forge servers
+    forge_args=$(ls ${instdir}libraries/net/minecraftforge/forge/*/unix_args.txt | head -n 1)
+    forge_args="@${forge_args}"
+    echo "exec java ${cli_args} -Xms${gamememMIN}M -Xmx${gamemem}M ${forge_args}" >> ${instdir}server
+  else
+    # Non-forge servers
+    echo "exec java ${cli_args} -Xms${gamememMIN}M -Xmx${gamemem}M -jar `basename $jarfile` --nogui" >> ${instdir}server
+  fi
+fi
+chmod +x ${instdir}server
+# Set ownership to the user
+chown -R $user:$user $instdir
+# Need to generate the config and EULA
+# Note: Because the EULA is not yet accepted within eula.txt, the server will init and quit immediately.
+if [[ $upgrade == 0 ]] || [[ ! -e ${instdir}server.properties ]]; then
+  dialog --infobox "Initializing server..." 3 34 ; sleep 1
+  su - $user -c ${instdir}server > /dev/null 2>&1
+fi
+
+# Accepting the EULA
+if [[ $eula == "accepted" ]]; then
+  echo "# https://account.mojang.com/documents/minecraft_eula ACCEPTED by user during installation
+# $eula_stamp
+eula=true" > ${instdir}eula.txt
+fi
+
+# Create the safe reboot script
+echo '#!/bin/bash
+if [[ $EUID -ne 0 ]]; then
+  echo "ERROR: This script must be run as root" 2>&1
+  exit 1
+fi
+su - $user -c "'${instdir}'stop"
+echo
+echo "Rebooting."
+/sbin/reboot' > ${instdir}reboot
+chmod +x ${instdir}reboot
+# Create the safe stop script
+echo '#!/bin/bash
+user=$(whoami);
+if [[ $user != "'${user}'" ]]; then
+  if su - '$user' -c "/usr/bin/screen -list" | grep -q Minecraft; then
+    printf "Stopping Minecraft Server. This will take time."
+    su - '$user' -c "screen -S Minecraft -p 0 -X stuff \"stop^M\""
+    running=1
+  fi
+  while [[ $running == 1 ]]; do
+    if ! su - '$user' -c "/usr/bin/screen -list" | grep -q Minecraft; then
+      running=0
+    fi
+    sleep 3
+    printf "."
+  done
+else
+  if /usr/bin/screen -list | grep -q Minecraft; then
+    printf "Stopping Minecraft Server. This will take time."
+    screen -S Minecraft -p 0 -X stuff "stop^M"
+    running=1
+  fi
+  while [[ $running == 1 ]]; do
+    if ! /usr/bin/screen -list | grep -q Minecraft; then
+      running=0
+    fi
+    sleep 3
+    printf "."
+  done
+fi
+echo
+echo "Done. Minecraft has been stopped safely."' > ${instdir}stop
+chmod a+x ${instdir}stop
+
+# Create the service
+echo '#/bin/bash
+set -e
+
+### BEGIN INIT INFO
+# Provides:       Minecraft
+# Required-Start: $remote_fs $network
+# Required-Stop:  $remote_fs
+# Default-Stop:   0 1 6
+# Short-Description: Minecraft server powered by Minecraft Installer
+### END INIT INFO
+
+case "$1" in
+
+stop)
+      '${instdir}'stop
+    ;;
+
+status)
+      user=$(whoami); if [ $user != "'${user}'" ]; then echo "Cannot run as ${user} - expecting '${user}'"; exit; fi
+      if screen -ls | grep -q Minecraft; then
+        echo 1
+      else
+        echo 0
+      fi
+    ;;
+
+*)
+
+    echo "usage: $0 <stop|status>" >&2
+
+    exit 1
+esac
+' > /etc/init.d/Minecraft
+chmod a+x /etc/init.d/Minecraft
+
+# Remove old symlinks
+if [[ -s /etc/rc0.d/K01stop-Minecraft ]]; then
+  rm -f /etc/rc0.d/K01stop-Minecraft
+fi
+if [[ -s /etc/rc6.d/K01stop-Minecraft ]]; then
+  rm -f /etc/rc6.d/K01stop-Minecraft
+fi
+# Make the stop command run automatically at shutdown
+sudo ln -s ${instdir}stop /etc/rc0.d/K01stop-Minecraft
+# Make the stop command run automatically at reboot
+sudo ln -s ${instdir}stop /etc/rc6.d/K01stop-Minecraft
+
+###############################################
+# /Create the scripts
+###############################################
+
+
+###############################################
+# Create config folders
+###############################################
+
+  if [[ ! -d /etc/Minecraft/pid/ ]]; then
+    mkdir -p /etc/Minecraft/pid
+  fi
+
+  chown -R $user:$user /etc/Minecraft/
+
+###############################################
+# /Create config folders
+###############################################
+
+
+###############################################
+# Overclock
+###############################################
+
+if [[ ! $oc_volt == 0 ]]; then
+  dialog --infobox "Overclocking your system..." 3 34 ; sleep 1
+  datestamp=$(date +"%Y-%m-%d_%H-%M-%S")
+
+  cp $configfile /boot/config-${datestamp}.txt
+
+  # Replace existing overclock settings or add new ones if none exist
+
+  /bin/sed -i -- "/over_voltage=/c\over_voltage=${oc_volt}" $configfile
+  if ! grep -q "over_voltage=" $configfile; then
+    echo "over_voltage=$oc_volt" >> $configfile
+  fi
+
+  /bin/sed -i -- "/arm_freq=/c\arm_freq=${oc_freq}" $configfile
+  if ! grep -q "arm_freq=" $configfile; then
+    echo "arm_freq=${oc_freq}" >> $configfile
+  fi
+
+  /bin/sed -i -- "/dtparam=audio=/c\dtparam=audio=off" $configfile
+  if ! grep -q "dtparam=audio=" $configfile; then
+    echo "dtparam=audio=" >> $configfile
+  fi
+
+fi
+
+###############################################
+# /Overclock
+###############################################
+
+
+###############################################
+# Tweak Server Configs
+###############################################
+if [[ -e ${instdir}server.properties ]]; then
+
+  dialog --infobox "Applying config..." 3 34 ; sleep 1
+  # These settings are my own defaults, so only do these during first install (not upgrade)
+  # Will not replace user-configured changes in the server.properties
+  if [[ $upgrade == 0 ]]; then
+
+    # Enable Query
+      # Change the value if it exists
+      /bin/sed -i '/enable-query=/c\enable-query=true' ${instdir}server.properties
+      # Add it if it doesn't exist
+      if ! grep -q "enable-query=" ${instdir}server.properties; then
+        echo "enable-query=true" >> ${instdir}server.properties
+      fi
+
+    # Set game difficulty to Normal (default is Easy, but we want at least SOME challenge)
+      # Change the value if it exists
+      /bin/sed -i '/difficulty=/c\difficulty=normal' ${instdir}server.properties
+      # Add it if it doesn't exist
+      if ! grep -q "difficulty=" ${instdir}server.properties; then
+        echo "difficulty=normal" >> ${instdir}server.properties
+      fi
+
+    # Set the view distance to something the Raspberry Pi can handle quite well
+      # Change the value if it exists
+      /bin/sed -i '/view-distance=/c\view-distance=7' ${instdir}server.properties
+      # Add it if it doesn't exist
+      if ! grep -q "view-distance=" ${instdir}server.properties; then
+        echo "view-distance=7" >> ${instdir}server.properties
+      fi
+
+    # Level Seed
+      # Change the value if it exists
+      /bin/sed -i "/level-seed=/c\level-seed=${seed}" ${instdir}server.properties
+      # Add it if it doesn't exist
+      if ! grep -q "level-seed=" ${instdir}server.properties; then
+        echo "level-seed=${seed}" >> ${instdir}server.properties
+      fi
+
+  fi
+
+  # These ones, however, are selected by the user, so we'll make these changes even if already installed
+
+    # Game Mode (User Selected During Install)
+      # Change the value if it exists
+      /bin/sed -i "/gamemode=/c\gamemode=${gamemode}" ${instdir}server.properties
+      # Add it if it doesn't exist
+      if ! grep -q "gamemode=" ${instdir}server.properties; then
+        echo "gamemode=${gamemode}" >> ${instdir}server.properties
+      fi
+
+fi
+
+###############################################
+# /Tweak Server Configs
+###############################################
+# Set ownership to the user
+chown -R $user:$user $instdir
+
+###############################################
+# Install cronjob to auto-start server on boot
+###############################################
+
+# Dump current crontab to tmp file, empty if doesn't exist
+  crontab -u $user -l > /tmp/cron.tmp 2>/dev/null
+
+  if [[ "$cron" == "1" ]]; then
+    # Remove previous entry (in case it's an old version)
+    /bin/sed -i~ "\~${instdir}server~d" /tmp/cron.tmp
+    # Add server to auto-load at boot if doesn't already exist in crontab
+    if ! grep -q "minecraft/server" /tmp/cron.tmp; then
+      dialog --infobox "Enabling auto-run..." 3 34 ; sleep 1
+      printf "\n@reboot /usr/bin/screen -dmS Minecraft ${instdir}server > /dev/null 2>&1\n" >> /tmp/cron.tmp
+      cronupdate=1
+    fi
+  else
+    # Just in case it was previously enabled, disable it
+    # as this user requested not to auto-run
+    /bin/sed -i~ "\~${instdir}server~d" /tmp/cron.tmp
+    cronupdate=1
+  fi
+
+  if [[ $psi == 1 ]]; then
+    if ! grep -q "Minecraft/psi/psi.php" /tmp/cron.tmp; then
+      dialog --infobox "Enabling Minecraft SI..." 3 34 ; sleep 1
+      php=$(type -p php)
+      printf "\n@reboot $php -S 0.0.0.0:8088 -t /etc/Minecraft/psi/ > /dev/null 2>&1\n" >> /tmp/cron.tmp
+      cronupdate=1
+    fi
+  fi
+
+  # Import revised crontab
+  if [[ "$cronupdate" == "1" ]]
+  then
+    crontab -u $user /tmp/cron.tmp
+  fi
+
+  # Remove temp file
+  rm /tmp/cron.tmp
+
+###############################################
+# /Install cronjob to auto-start server on boot
+###############################################
+
+###############################################
+# Run the server now
+###############################################
+
+  dialog --infobox "Starting the server..." 3 26 ;
+  su - $user -c "/usr/bin/screen -dmS Minecraft ${instdir}server"
+
+###############################################
+# /Run the server now
+###############################################
+
+# Forge is a bit funny because it doesn't create server.properties file during initialization, so that file is created from assets.
+# However, upon initialization, and 'mods' folder is created, so we will use that to identify if initialization was successful.
+if [[ $flavor == "Forge" ]]; then
+  if [[ ! -d ${instdir}mods ]]; then
+    # mods folder not found, so initialization failed. Remove the server.properties asset file so we don't lie about success
+    rm ${instdir}server.properties
+  fi
+fi
+
+if [[ -e ${instdir}server.properties ]]; then
+  dialog --title "Success" \
+      --msgbox "\n$flavor Minecraft server installed successfully." 8 50
+else
+  dialog --title "Warning" \
+      --msgbox "\n$flavor appears to have installed, but is not initializing correctly. It is unlikely to work until this is resolved." 9 50
+fi
+clear
+  echo
+  echo
+  echo "Installation complete."
+  echo
+  echo "Minecraft server is now running on $ip"
+  echo
+  echo "Remember: World generation can take a few minutes. Be patient."
+  echo
+  echo
+
+
+
+
+
